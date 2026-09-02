@@ -89,9 +89,10 @@
   #pane-tone input[type=range]{width:100%;max-width:none}
   .tlhint{color:var(--faint);font-size:13px;margin-top:14px;line-height:1.6}
   .scope.tone{cursor:crosshair}
-  #repSeg,#bandSeg{display:flex;gap:3px;background:#0b0e14;border:1px solid var(--line);border-radius:9px;padding:3px}
-  #repSeg button,#bandSeg button{border:0;background:transparent;color:var(--muted);font-family:var(--mono);font-size:12px;padding:6px 12px;border-radius:6px;cursor:pointer;letter-spacing:.04em}
-  #repSeg button[aria-selected=true],#bandSeg button[aria-selected=true]{background:var(--panel2);color:var(--amber)}
+  #repSeg,#bandSeg,#sendSeg{display:flex;gap:3px;background:#0b0e14;border:1px solid var(--line);border-radius:9px;padding:3px}
+  #repSeg button,#bandSeg button,#sendSeg button{border:0;background:transparent;color:var(--muted);font-family:var(--mono);font-size:12px;padding:6px 12px;border-radius:6px;cursor:pointer;letter-spacing:.04em}
+  #repSeg button[aria-selected=true],#bandSeg button[aria-selected=true],#sendSeg button[aria-selected=true]{background:var(--panel2);color:var(--amber)}
+  #specCanvas{image-rendering:pixelated}
 
   /* readout */
   .readout{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin:16px 0}
@@ -196,6 +197,18 @@
       <div class="preview" id="imgPreview" hidden>
         <img id="imgThumb" alt="compressed preview">
         <div class="meta" id="imgMeta"></div>
+      </div>
+      <div class="quality" id="imgSend" hidden>
+        <span>Send as</span>
+        <div class="seg2" id="sendSeg">
+          <button data-m="fast" aria-selected="true">Fast picture</button>
+          <button data-m="exact" aria-selected="false">Exact file</button>
+        </div>
+        <span class="faint" id="sendHint" style="color:var(--faint);font-size:12px"></span>
+      </div>
+      <div class="preview" id="specPreview" hidden>
+        <canvas id="specCanvas" width="10" height="10" style="max-width:170px;border:1px solid var(--line2);border-radius:8px;background:#000"></canvas>
+        <div class="meta">What the receiver's waterfall shows — the picture painted in sound. Seconds, not minutes; lossy, no exact bytes.</div>
       </div>
     </div>
     <!-- file -->
@@ -430,6 +443,7 @@ function setLED(state){ const led=$('led'), t=$('ledTxt'); led.className='led'+(
 function refreshReadout(){
   const sPerSym=symSec(), bps=(1/sPerSym)*4;
   $('rRate').innerHTML=(bps).toFixed(0)+' <small>bits/s</small>';
+  if(activeMode()==='image'&&imgMode==='fast'){ if(imgEl){ $('rBytes').textContent='picture'; $('rTones').textContent=FAST_ROWS+' rows'; $('rTime').textContent=fmtTime(FAST_SECS); $('rRate').innerHTML='parallel <small>paint</small>'; } else { $('rBytes').textContent='—'; $('rTones').textContent='—'; $('rTime').textContent='—'; } return; }
   if(!current){ $('rBytes').textContent='—'; $('rTones').textContent='—'; $('rTime').textContent='—'; return; }
   const frame=buildFrame(current.kind,current.name,current.data);
   const tones=frame.length*2, reps=REP(), one=LEAD+tones*sPerSym, secs=reps*one+(reps-1)*GAP;
@@ -466,14 +480,28 @@ function activeMode(){ return document.querySelector('.seg [role=tab][aria-selec
 $('msg').addEventListener('input',()=>recompute('text'));
 
 /* ---- IMAGE ---- */
-let stampDim=128, lastImgSrc=null;
+let stampDim=128, lastImgSrc=null, imgEl=null, imgMode='fast';
+const FAST_ROWS=72, FAST_SECS=10;
+function fastBand(){ return BAND==='ultra'?[17500,19900]:[350,3400]; }
 $('stampSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{
   $('stampSeg').querySelectorAll('button').forEach(x=>x.setAttribute('aria-selected',x===b));
   stampDim=+b.dataset.dim; if(lastImgSrc) compressImage(lastImgSrc);
 });
+$('sendSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{
+  $('sendSeg').querySelectorAll('button').forEach(x=>x.setAttribute('aria-selected',x===b));
+  imgMode=b.dataset.m; updateImgSend();
+});
+function updateImgSend(){
+  const fast=imgMode==='fast';
+  $('imgQuality').hidden=fast; $('specPreview').hidden=!fast;
+  $('sendHint').textContent=fast?`≈${FAST_SECS}s · lossy · receiver just watches`:'exact bytes · slow but perfect';
+  if(fast&&imgEl) renderSpec();
+  enableTransmit(!!imgEl); refreshReadout();
+}
 function loadImageSrc(src){ lastImgSrc=src; compressImage(src); }
 function compressImage(src){
   const im=new Image(); im.onload=()=>{
+    imgEl=im;
     const scale=Math.min(1, stampDim/Math.max(im.width,im.height));
     const w=Math.max(1,Math.round(im.width*scale)), h=Math.max(1,Math.round(im.height*scale));
     const c=document.createElement('canvas'); c.width=w; c.height=h; const x=c.getContext('2d');
@@ -482,14 +510,56 @@ function compressImage(src){
     for(let it=0;it<8;it++){ url=c.toDataURL('image/jpeg',q); bytes=dataURLBytes(url); if(bytes<=budget||q<=0.28) break; q-=0.08; }
     const data=dataURLToBytes(url);
     current={kind:1,name:'photo.jpg',data};
-    $('imgQuality').hidden=false; $('imgPreview').hidden=false;
-    $('imgThumb').src=url;
-    $('imgMeta').innerHTML=`<b>${w}×${h}</b> stamp · quality ${(q*100)|0}%<br><b>${fmtBytes(data.length)}</b> to send`;
-    refreshReadout(); enableTransmit(true);
-    setStatus($('sStatus'),`Image ready — ${fmtBytes(data.length)}. Bigger stamp = sharper but slower.`,'ok');
+    $('imgPreview').hidden=false; $('imgThumb').src=url;
+    $('imgMeta').innerHTML=`<b>${w}×${h}</b> stamp · quality ${(q*100)|0}%<br><b>${fmtBytes(data.length)}</b> exact`;
+    $('imgSend').hidden=false; updateImgSend();
+    setStatus($('sStatus'), imgMode==='fast'?`Image ready — Fast picture, ≈${FAST_SECS}s.`:`Image ready — exact ${fmtBytes(data.length)}.`,'ok');
   };
   im.onerror=()=>setStatus($('sStatus'),'Could not read that image.','err');
   im.src=src;
+}
+// build a rows×cols grayscale amplitude grid from an image (letterboxed, gamma^2), shared by preview + synth
+function imgGrid(im, cols, rows){
+  const c=document.createElement('canvas'); c.width=cols; c.height=rows; const x=c.getContext('2d');
+  const s=Math.min(cols/im.width, rows/im.height), w=Math.max(1,Math.round(im.width*s)), h=Math.max(1,Math.round(im.height*s));
+  x.fillStyle='#000'; x.fillRect(0,0,cols,rows); x.imageSmoothingQuality='high'; x.drawImage(im,(cols-w)/2,(rows-h)/2,w,h);
+  const d=x.getImageData(0,0,cols,rows).data, A=new Float32Array(rows*cols);
+  for(let i=0;i<rows*cols;i++){ let v=(0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2])/255; v=v<0.08?0:v; A[i]=v*v; }
+  return A;
+}
+function renderSpec(){
+  if(!imgEl) return; const cols=Math.round(FAST_SECS*15), rows=FAST_ROWS, A=imgGrid(imgEl,cols,rows);
+  const cv=$('specCanvas'); cv.width=cols; cv.height=rows; const g=cv.getContext('2d'), id=g.createImageData(cols,rows);
+  for(let r=0;r<rows;r++) for(let q=0;q<cols;q++){ const v=Math.sqrt(A[r*cols+q]), o=(r*cols+q)*4; id.data[o]=20+v*210; id.data[o+1]=25+v*175; id.data[o+2]=40+v*90; id.data[o+3]=255; }
+  g.putImageData(id,0,0);
+}
+// paint the image into sound: rows→frequencies (top=high), columns→time, brightness→amplitude
+function fastSynth(im, secs, rows, fs){
+  const cols=Math.round(secs*15), A=imgGrid(im,cols,rows), [fLo,fHi]=fastBand();
+  const n=Math.floor(secs*fs), out=new Float32Array(n), colLen=n/cols;
+  const freqs=[]; for(let r=0;r<rows;r++) freqs.push(fHi-(fHi-fLo)*(r/(rows-1)));
+  const phase=new Float64Array(rows), dph=freqs.map(f=>2*Math.PI*f/fs), lastAmp=new Float32Array(rows);
+  for(let i=0;i<n;i++){ const cpos=i/colLen, q=Math.min(cols-1,Math.floor(cpos)), q2=Math.min(cols-1,q+1), t=cpos-q; let sm=0;
+    for(let r=0;r<rows;r++){ const a=A[r*cols+q]*(1-t)+A[r*cols+q2]*t; if(a>0||lastAmp[r]>0) sm+=a*Math.sin(phase[r]); phase[r]+=dph[r]; lastAmp[r]=a; } out[i]=sm; }
+  const fN=Math.round(0.005*fs); for(let i=0;i<fN;i++){ out[i]*=i/fN; out[n-1-i]*=i/fN; }
+  let pk=0; for(const v of out) pk=Math.max(pk,Math.abs(v)); const g=pk>0?0.85/pk:1; for(let i=0;i<n;i++) out[i]*=g;
+  return out;
+}
+function transmitFastPicture(){
+  if(!imgEl) return; stopPlay();
+  const fs=44100, samples=fastSynth(imgEl,FAST_SECS,FAST_ROWS,fs), total=samples.length/fs, [fLo,fHi]=fastBand();
+  FLO=Math.max(120,fLo-150); FHI=fHi+250; setAxis();
+  const el=playSamples(samples,fs, e=>{ setStatus($('sStatus'),'Could not start audio ('+(e&&e.name||'error')+'). Check volume / silent switch.','err'); endPlay(); });
+  playing={el,samples,fs,total};
+  sigMode='tx'; setLED('tx'); $('stopBtn').disabled=false; $('bandTxt').textContent='sending picture'; setStatus($('sStatus'),`Sending picture — ${fmtTime(total)}. Point the other device's mic here, on the Waterfall view.`,'live');
+  const NB=2048, binHz=fs/4096, fake=new Float32Array(NB), probes=[]; for(let i=0;i<72;i++) probes.push(fLo+(fHi-fLo)*(i/71));
+  const step=()=>{ if(!playing||playing.el!==el) return; requestAnimationFrame(step);
+    const t=el.currentTime, idx=Math.floor(t*fs), start=Math.max(0,idx-1024), win=Math.min(1024,samples.length-start);
+    if(win>64){ fake.fill(-90); for(const f of probes){ const e=goertzel(samples,start,win,f,fs), db=20*Math.log10(e/win+1e-6), b=Math.round(f/binHz); if(b>=0&&b<NB) fake[b]=Math.max(fake[b], Math.max(-90,db)); } lastBins=fake; lastBinHz=binHz; }
+    $('txProg').style.width=Math.min(100,(t/total)*100)+'%';
+  };
+  requestAnimationFrame(step);
+  el.onended=()=>{ if(playing&&playing.el===el){ endPlay(); setStatus($('sStatus'),'Picture sent.','ok'); } };
 }
 function dataURLBytes(u){ return Math.floor((u.length-u.indexOf(',')-1)*3/4); }
 function dataURLToBytes(u){ const s=atob(u.split(',')[1]); const a=new Uint8Array(s.length); for(let i=0;i<s.length;i++) a[i]=s.charCodeAt(i); return a; }
@@ -513,7 +583,7 @@ $('fileDrop').onclick=()=>$('fileIn').click();
 
 function recompute(mode){
   if(mode==='text'){ const t=$('msg').value; if(t.length){ current={kind:0,name:'message.txt',data:new TextEncoder().encode(t)}; enableTransmit(true); setStatus($('sStatus'),`${current.data.length} bytes ready.`,'ok'); } else { current=null; enableTransmit(false); setStatus($('sStatus'),'Type something, or switch to Image or File.'); } }
-  else if(mode==='image'){ enableTransmit(!!current&&current.kind===1); if(!current||current.kind!==1){ current=null; } }
+  else if(mode==='image'){ enableTransmit(!!imgEl); if(imgEl) updateImgSend(); }
   else if(mode==='file'){ enableTransmit(!!current&&current.kind===2); if(!current||current.kind!==2){ current=null; } }
   else if(mode==='tone'){ current=null; enableTransmit(false); }
   refreshReadout();
@@ -529,6 +599,7 @@ function makeWav(samples,fs){ const buf=new ArrayBuffer(44+samples.length*2), v=
 function playSamples(samples,fs,onerr){ const el=new Audio(); el.src=URL.createObjectURL(makeWav(samples,fs)); const p=el.play(); if(p&&p.catch) p.catch(e=>{ if(onerr) onerr(e); }); return el; }
 
 $('playBtn').onclick=()=>{
+  if(activeMode()==='image'&&imgMode==='fast'){ transmitFastPicture(); return; }
   if(!current) return; stopPlay();
   const fs=44100, frame=buildFrame(current.kind,current.name,current.data), samples=synth(frame,symSec(),44100,REP()), total=samples.length/fs;
   const el=playSamples(samples,fs, e=>{ setStatus($('sStatus'),'Could not start audio ('+(e&&e.name||'error')+'). Tap Transmit again, and check the volume / phone silent switch.','err'); endPlay(); });
@@ -653,7 +724,7 @@ scope.addEventListener('pointerup',()=>dragging=false);
 scope.addEventListener('pointercancel',()=>dragging=false);
 
 refreshReadout();
-window.__earshot={synth,decode,buildFrame,crc32,setBand,getBand:()=>({FSYNC,F0,DF,BAND})};
+window.__earshot={synth,decode,buildFrame,crc32,setBand,getBand:()=>({FSYNC,F0,DF,BAND}),fastSynth,imgGrid,fastBand};
 })();
 </script>
 </body>
