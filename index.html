@@ -89,9 +89,9 @@
   #pane-tone input[type=range]{width:100%;max-width:none}
   .tlhint{color:var(--faint);font-size:13px;margin-top:14px;line-height:1.6}
   .scope.tone{cursor:crosshair}
-  #repSeg{display:flex;gap:3px;background:#0b0e14;border:1px solid var(--line);border-radius:9px;padding:3px}
-  #repSeg button{border:0;background:transparent;color:var(--muted);font-family:var(--mono);font-size:12px;padding:6px 12px;border-radius:6px;cursor:pointer;letter-spacing:.04em}
-  #repSeg button[aria-selected=true]{background:var(--panel2);color:var(--amber)}
+  #repSeg,#bandSeg{display:flex;gap:3px;background:#0b0e14;border:1px solid var(--line);border-radius:9px;padding:3px}
+  #repSeg button,#bandSeg button{border:0;background:transparent;color:var(--muted);font-family:var(--mono);font-size:12px;padding:6px 12px;border-radius:6px;cursor:pointer;letter-spacing:.04em}
+  #repSeg button[aria-selected=true],#bandSeg button[aria-selected=true]{background:var(--panel2);color:var(--amber)}
 
   /* readout */
   .readout{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin:16px 0}
@@ -243,6 +243,14 @@
     </div>
     <span style="color:var(--faint);font-size:12px">plays the message N times — the receiver keeps the first clean copy</span>
   </div>
+  <div class="dial">
+    <span>Band</span>
+    <div class="seg2" id="bandSeg">
+      <button data-b="audible" aria-selected="true">Audible</button>
+      <button data-b="ultra" aria-selected="false">Inaudible · ~18 kHz</button>
+    </div>
+    <span style="color:var(--faint);font-size:12px">must match both devices · inaudible = covert but shorter range, needs decent speakers</span>
+  </div>
 
   <div class="controls">
     <button class="btn primary" id="playBtn" disabled><span class="dot"></span>Transmit</button>
@@ -274,8 +282,9 @@
 (() => {
 'use strict';
 /* ================= CODEC (proven; unchanged core) ================= */
-const FSYNC=1050, N_TONES=16, F0=1200, DF=50, LEAD=0.3;
-const DATA=[]; for(let k=0;k<N_TONES;k++) DATA.push(F0+k*DF);
+const N_TONES=16, LEAD=0.3;
+let FSYNC=1050, F0=1200, DF=50, BAND='audible';
+let DATA=[]; function computeTones(){ DATA=new Array(N_TONES); for(let k=0;k<N_TONES;k++) DATA[k]=F0+k*DF; } computeTones();
 const CRC_T=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0;}return t;})();
 function crc32(b,len){let c=0xFFFFFFFF;len=len==null?b.length:len;for(let i=0;i<len;i++)c=CRC_T[(c^b[i])&0xFF]^(c>>>8);return (c^0xFFFFFFFF)>>>0;}
 function buildFrame(kind,name,data){
@@ -360,7 +369,8 @@ const fmtTime=s=> s<60? s.toFixed(1)+' s' : Math.floor(s/60)+'m '+Math.round(s%6
 
 /* ---- scope: dual view (waterfall + cymatics), one always-on loop ---- */
 const scope=$('scope'), sctx=scope.getContext('2d');
-let FLO=900, FHI=2100;
+let FLO=900, FHI=2100, DFLO=900, DFHI=2100;
+function setAxis(){ const f=v=>v>=1000?(v/1000)+'k':(''+v); const el=document.getElementById('axis'); if(el) el.innerHTML=f(FHI)+'<br><br><br>'+f(FLO); }
 let dpr=1, SW=0, SH=0;
 function fitScope(){ dpr=Math.min(2,window.devicePixelRatio||1); const r=scope.getBoundingClientRect(); SW=Math.max(300,Math.floor(r.width)); SH=240; scope.width=SW*dpr; scope.height=SH*dpr; sctx.setTransform(dpr,0,0,dpr,0,0); sctx.fillStyle='#06080c'; sctx.fillRect(0,0,SW,SH); }
 window.addEventListener('resize',fitScope);
@@ -375,7 +385,7 @@ function pushWaveColumn(){
   const shift=2; const img=sctx.getImageData(shift*dpr,0,(SW-shift)*dpr,SH*dpr); sctx.putImageData(img,0,0);
   for(let y=0;y<SH;y++){ const f=FHI-(FHI-FLO)*(y/(SH-1)); let v;
     if(lastBins){ const b=f/lastBinHz,b0=Math.floor(b); const db=lastBins[b0]*(1-(b-b0))+lastBins[Math.min(lastBins.length-1,b0+1)]*(b-b0); v=(db+90)/55; }
-    else v=((f>1180&&f<1970)?0.06:0.02)+Math.random()*0.05;
+    else v=((f>F0-DF&&f<F0+N_TONES*DF)?0.06:0.02)+Math.random()*0.05;
     sctx.fillStyle=rampCss(v); sctx.fillRect(SW-shift,y,shift,1); }
 }
 
@@ -431,6 +441,12 @@ function refreshReadout(){
 $('sym').oninput=e=>{ $('symV').textContent=e.target.value+' ms'; refreshReadout(); };
 let repVal=3; const REP=()=>repVal;
 $('repSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{ $('repSeg').querySelectorAll('button').forEach(x=>x.setAttribute('aria-selected',x===b)); repVal=+b.dataset.r; refreshReadout(); });
+function setBand(mode){ BAND=mode;
+  if(mode==='ultra'){ FSYNC=17700; F0=18000; DF=100; DFLO=17300; DFHI=19900; }
+  else { FSYNC=1050; F0=1200; DF=50; DFLO=900; DFHI=2100; }
+  computeTones(); if(!listen){ FLO=DFLO; FHI=DFHI; setAxis(); } refreshReadout();
+}
+$('bandSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{ if(listen) return; $('bandSeg').querySelectorAll('button').forEach(x=>x.setAttribute('aria-selected',x===b)); setBand(b.dataset.b); });
 
 /* ---- mode tabs ---- */
 document.querySelectorAll('.seg [role=tab]').forEach(tab=>{
@@ -547,7 +563,7 @@ async function startMic(decodeOn){
   if(decodeOn){ proc=a.createScriptProcessor(4096,1,1); zero=a.createGain(); zero.gain.value=0; rec=[]; proc.onaudioprocess=e=>rec.push(new Float32Array(e.inputBuffer.getChannelData(0))); src.connect(proc); proc.connect(zero); zero.connect(a.destination); }
   src.connect(an);
   listen={stream,proc,zero,an,src,rec,fs:a.sampleRate,vis:!decodeOn};
-  FLO=decodeOn?900:120; FHI=decodeOn?2100:4200; $('axis').innerHTML=(FHI>=1000?(FHI/1000)+'k':FHI)+'<br><br><br>'+(FLO>=1000?(FLO/1000)+'k':FLO);
+  FLO=decodeOn?DFLO:120; FHI=decodeOn?DFHI:Math.max(4200,DFHI+300); setAxis();
   $('listenBtn').disabled=true; $('visBtn').disabled=true; $('decodeBtn').disabled=false; $('result').innerHTML=''; sigMode='rx'; setLED('rx');
   $('bandTxt').textContent=decodeOn?'listening':'any sound';
   setStatus($('rStatus'), decodeOn?'Listening… play the sound on the other device now — it decodes on its own.':'Visualising the mic. Make any sound — hum, sing, play music, chant — and watch the plate.', 'live');
@@ -572,7 +588,7 @@ function stopMic(finalize){
   try{ listen.src.disconnect(); if(listen.proc){ listen.proc.disconnect(); listen.zero.disconnect(); } listen.an.disconnect(); }catch(e){}
   const wasVis=listen.vis; listen=null;
   $('listenBtn').disabled=false; $('visBtn').disabled=false; $('decodeBtn').disabled=true; $('level').style.width='0%'; setLED('idle'); $('bandTxt').textContent='carrier idle'; sigMode='idle'; lastBins=null;
-  FLO=900; FHI=2100; $('axis').innerHTML='2.1k<br><br><br>0.9k'; if(wasVis) cyOverride=null;
+  FLO=DFLO; FHI=DFHI; setAxis(); if(wasVis) cyOverride=null;
 }
 $('listenBtn').onclick=()=>startMic(true);
 $('visBtn').onclick=()=>startMic(false);
@@ -633,7 +649,7 @@ scope.addEventListener('pointerup',()=>dragging=false);
 scope.addEventListener('pointercancel',()=>dragging=false);
 
 refreshReadout();
-window.__earshot={synth,decode,buildFrame,crc32};
+window.__earshot={synth,decode,buildFrame,crc32,setBand,getBand:()=>({FSYNC,F0,DF,BAND})};
 })();
 </script>
 </body>
