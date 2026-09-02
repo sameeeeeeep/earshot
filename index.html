@@ -90,9 +90,9 @@
   #pane-tone input[type=range]{width:100%;max-width:none}
   .tlhint{color:var(--faint);font-size:13px;margin-top:14px;line-height:1.6}
   .scope.tone{cursor:crosshair}
-  #repSeg,#bandSeg,#sendSeg,#scaleSeg,#txtSeg{display:flex;gap:3px;background:#0b0e14;border:1px solid var(--line);border-radius:9px;padding:3px}
-  #repSeg button,#bandSeg button,#sendSeg button,#scaleSeg button,#txtSeg button{border:0;background:transparent;color:var(--muted);font-family:var(--mono);font-size:12px;padding:6px 12px;border-radius:6px;cursor:pointer;letter-spacing:.04em}
-  #repSeg button[aria-selected=true],#bandSeg button[aria-selected=true],#sendSeg button[aria-selected=true],#scaleSeg button[aria-selected=true],#txtSeg button[aria-selected=true]{background:var(--panel2);color:var(--amber)}
+  #repSeg,#bandSeg,#sendSeg,#scaleSeg,#txtSeg,#exactSeg{display:flex;gap:3px;background:#0b0e14;border:1px solid var(--line);border-radius:9px;padding:3px}
+  #repSeg button,#bandSeg button,#sendSeg button,#scaleSeg button,#txtSeg button,#exactSeg button{border:0;background:transparent;color:var(--muted);font-family:var(--mono);font-size:12px;padding:6px 12px;border-radius:6px;cursor:pointer;letter-spacing:.04em}
+  #repSeg button[aria-selected=true],#bandSeg button[aria-selected=true],#sendSeg button[aria-selected=true],#scaleSeg button[aria-selected=true],#txtSeg button[aria-selected=true],#exactSeg button[aria-selected=true]{background:var(--panel2);color:var(--amber)}
   #specCanvas{image-rendering:pixelated}
 
   /* readout */
@@ -182,8 +182,8 @@
       <div class="quality" id="txtSend">
         <span>Send as</span>
         <div class="seg2" id="txtSeg">
-          <button data-m="fast" aria-selected="true">Fast picture</button>
-          <button data-m="exact" aria-selected="false">Exact text</button>
+          <button data-m="exact" aria-selected="true">Exact text</button>
+          <button data-m="fast" aria-selected="false">Fast picture</button>
         </div>
         <span style="color:var(--faint);font-size:12px" id="txtHint"></span>
       </div>
@@ -210,8 +210,8 @@
       <div class="quality" id="imgSend" hidden>
         <span>Send as</span>
         <div class="seg2" id="sendSeg">
-          <button data-m="fast" aria-selected="true">Fast picture</button>
-          <button data-m="exact" aria-selected="false">Exact file</button>
+          <button data-m="exact" aria-selected="true">Exact file</button>
+          <button data-m="fast" aria-selected="false">Fast picture</button>
         </div>
         <span class="faint" id="sendHint" style="color:var(--faint);font-size:12px"></span>
       </div>
@@ -282,6 +282,14 @@
       <button data-b="ultra" aria-selected="false">Inaudible · ~18 kHz</button>
     </div>
     <span style="color:var(--faint);font-size:12px">must match both devices · inaudible = covert but shorter range, needs decent speakers</span>
+  </div>
+  <div class="dial">
+    <span>Exact speed</span>
+    <div class="seg2" id="exactSeg">
+      <button data-e="turbo" aria-selected="true">Turbo</button>
+      <button data-e="standard" aria-selected="false">Standard</button>
+    </div>
+    <span style="color:var(--faint);font-size:12px">Turbo = 8 tones at once, ~8× faster (audible band). Standard = one tone, slow but toughest. Match both devices.</span>
   </div>
 
   <div class="controls">
@@ -390,6 +398,66 @@ function decode(x,fs,symN){
   return {err:'Signal found but it would not decode cleanly. Move closer, cut the noise, and resend.'};
 }
 
+/* ===== OFDM / Turbo: parallel MFSK — exact bytes, ~OG× faster. Same frame + CRC; receiver gets real text/file. ===== */
+const OG=8, OTPG=16, OBASE=600, OSP=44100/4096*4, OSYNC=480; // 8 groups × 16 tones, ~43 Hz spacing, band ~600–6060 Hz
+function oFreq(g,k){ return OBASE+(g*OTPG+k)*OSP; }
+function ofdmSynth(frame,sSec,fs,reps){
+  reps=reps||1; const leadN=Math.round(LEAD*fs), symN=Math.round(sSec*fs), gapN=Math.round(GAP*fs);
+  const nib=[]; for(const b of frame){ nib.push(b>>4,b&15); } while(nib.length%OG) nib.push(0);
+  const nsym=nib.length/OG, NT=OG*OTPG, one=leadN+nsym*symN, n=reps*one+(reps-1)*gapN, out=new Float32Array(n);
+  const ph=new Float64Array(NT), dph=new Float64Array(NT); for(let g=0;g<OG;g++) for(let k=0;k<OTPG;k++) dph[g*OTPG+k]=2*Math.PI*oFreq(g,k)/fs;
+  let sp=0, dsp=2*Math.PI*OSYNC/fs, o=0;
+  for(let rep=0;rep<reps;rep++){
+    for(let i=0;i<leadN;i++){ out[o++]=Math.sin(sp); sp+=dsp; }
+    for(let s=0;s<nsym;s++){ const act=new Int32Array(OG); for(let g=0;g<OG;g++) act[g]=g*OTPG+(nib[s*OG+g]||0);
+      for(let j=0;j<symN;j++){ let sm=0; for(let g=0;g<OG;g++) sm+=Math.sin(ph[act[g]]); out[o++]=sm; for(let t=0;t<NT;t++) ph[t]+=dph[t]; } }
+    if(rep<reps-1) o+=gapN;
+  }
+  const fN=Math.round(0.005*fs); for(let i=0;i<fN;i++){ out[i]*=i/fN; out[n-1-i]*=i/fN; }
+  let pk=0; for(const v of out) pk=Math.max(pk,Math.abs(v)); const g2=pk>0?0.85/pk:1; for(let i=0;i<n;i++) out[i]*=g2;
+  return out;
+}
+function oNib(x,start,fs,symN,g){ const a=start+Math.round(symN*0.1), len=Math.round(symN*0.8); let best=0,be=-1,sum=0; for(let k=0;k<OTPG;k++){ const e=goertzel(x,a,len,oFreq(g,k),fs); sum+=e; if(e>be){be=e;best=k;} } return {nib:best,conf:sum>0?be/sum:0}; }
+function oMagicAt(x,s,fs,symN){ if(s<0||s+symN>=x.length) return -1; const a=oNib(x,s,fs,symN,0),b=oNib(x,s,fs,symN,1),c=oNib(x,s,fs,symN,2),d=oNib(x,s,fs,symN,3); return (((a.nib<<4)|b.nib)===0x53 && ((c.nib<<4)|d.nib)===0x4E)?(a.conf+b.conf+c.conf+d.conf)/4:-1; }
+function ofdmCandidates(x,fs,symN){
+  const hop=Math.round(0.02*fs), win=Math.round(0.04*fs), probe=[oFreq(0,0),oFreq(4,8),oFreq(7,15)];
+  const es=[],pos=[]; let maxE=1e-9;
+  for(let p=0;p+win<x.length;p+=hop){ const e=goertzel(x,p,win,OSYNC,fs); let ed=0; for(const f of probe) ed+=goertzel(x,p,win,f,fs); ed/=probe.length; es.push(e>ed*1.4?e:0); pos.push(p); if(e>maxE)maxE=e; }
+  const ends=[]; let run=0,prev=false;
+  for(let i=0;i<es.length;i++){ const on=es[i]>0.12*maxE; if(on) run+=hop; else { if(prev&&run>0.18*fs) ends.push(pos[i]); run=0; } prev=on; }
+  if(prev&&run>0.18*fs) ends.push(pos[pos.length-1]);
+  const cands=[]; const lo=Math.round(0.6*symN),hi=Math.round(1.6*symN),fine=Math.max(1,Math.round(0.0025*symN));
+  for(const e of ends){ let best=-1,bc=-1; for(let s=e-lo;s<=e+hi;s+=fine){ const c=oMagicAt(x,s,fs,symN); if(c>bc){bc=c;best=s;} } if(bc>=0) cands.push({s:best,c:bc}); }
+  if(!cands.length){ const scanEnd=Math.min(x.length-symN*2,Math.round(6*fs)),step=Math.max(1,Math.round(0.004*fs)); let best=-1,bc=-1; for(let s=0;s<scanEnd;s+=step){ const c=oMagicAt(x,s,fs,symN); if(c>bc){bc=c;best=s;} } if(bc>=0) cands.push({s:best,c:bc}); }
+  cands.sort((a,b)=>b.c-a.c); return cands.map(c=>c.s);
+}
+function ofdmDecodeAt(x,s,fs,symN){
+  const avail=Math.floor((x.length-s)/symN), nsym=Math.min(avail,200000), nBytes=(nsym*OG)>>1; if(nBytes<9) return null;
+  const nibs=new Int16Array(nsym*OG); for(let sy=0;sy<nsym;sy++){ const st=s+sy*symN; for(let g=0;g<OG;g++) nibs[sy*OG+g]=oNib(x,st,fs,symN,g).nib; }
+  const b=new Uint8Array(nBytes); for(let i=0;i<nBytes;i++) b[i]=(nibs[2*i]<<4)|nibs[2*i+1];
+  if(b[0]!==0x53||b[1]!==0x4E) return null;
+  const kind=b[3], nameLen=b[4]; let p=5; if(p+nameLen+4>b.length) return null;
+  let name; try{name=new TextDecoder().decode(b.slice(p,p+nameLen));}catch(e){name='received.bin';} p+=nameLen;
+  const dataLen=((b[p]<<24)|(b[p+1]<<16)|(b[p+2]<<8)|b[p+3])>>>0; p+=4;
+  if(dataLen>500000) return null;
+  if(p+dataLen+4>b.length) return {truncated:true,dataLen,name};
+  const data=b.slice(p,p+dataLen); p+=dataLen;
+  const crc=((b[p]<<24)|(b[p+1]<<16)|(b[p+2]<<8)|b[p+3])>>>0, calc=crc32(b,p);
+  return {kind,name,data,dataLen,crcOk:crc===calc};
+}
+function ofdmDecode(x,fs,symN){
+  const cands=ofdmCandidates(x,fs,symN); if(!cands.length) return {err:'No signal found. Play it louder/closer, cut noise, then try again.'};
+  let fallback=null,trunc=null;
+  for(let i=0;i<cands.length&&i<16;i++){ const r=ofdmDecodeAt(x,cands[i],fs,symN); if(!r) continue; if(r.crcOk) return r; if(r.truncated){trunc=trunc||r;} else if(!fallback) fallback=r; }
+  if(fallback) return fallback;
+  if(trunc) return {err:`Still receiving "${trunc.name}" (${trunc.dataLen} bytes) — let it finish.`};
+  return {err:'Found a signal but couldn’t decode cleanly. Closer + quieter, then resend.'};
+}
+// dispatchers: exact mode = standard (serial) or turbo (OFDM)
+let EXACT_MODE='turbo';
+function exactSynth(frame,sSec,fs,reps){ return EXACT_MODE==='turbo'?ofdmSynth(frame,sSec,fs,reps):synth(frame,sSec,fs,reps); }
+function exactDecode(x,fs,symN){ return EXACT_MODE==='turbo'?ofdmDecode(x,fs,symN):decode(x,fs,symN); }
+
 /* ================= UI ================= */
 const $=id=>document.getElementById(id);
 let ctxA=null, rendered=null, playing=null, listen=null, current=null; // current={kind,name,data}
@@ -467,15 +535,18 @@ function refreshReadout(){
   if((activeMode()==='image'&&imgMode==='fast')||(activeMode()==='text'&&txtMode==='fast')){ $('rBytes').textContent='—'; $('rTones').textContent='—'; $('rTime').textContent='—'; return; }
   if(!current){ $('rBytes').textContent='—'; $('rTones').textContent='—'; $('rTime').textContent='—'; return; }
   const frame=buildFrame(current.kind,current.name,current.data);
-  const tones=frame.length*2, reps=REP(), one=LEAD+tones*sPerSym, secs=reps*one+(reps-1)*GAP;
+  const tones=frame.length*2, reps=REP(), turbo=EXACT_MODE==='turbo';
+  const cols=turbo?Math.ceil(tones/OG):tones, one=LEAD+cols*sPerSym, secs=reps*one+(reps-1)*GAP;
   $('rBytes').innerHTML=fmtBytes(current.data.length);
-  $('rTones').textContent=tones.toLocaleString()+(reps>1?' ×'+reps:'');
+  $('rTones').textContent=turbo?(cols+' cols ×'+OG+(reps>1?' ×'+reps:'')):(tones.toLocaleString()+(reps>1?' ×'+reps:''));
   $('rTime').textContent=fmtTime(secs);
+  $('rRate').innerHTML=Math.round((turbo?OG:1)*4/sPerSym)+' <small>bits/s</small>';
   rendered={frame};
 }
 $('sym').oninput=e=>{ $('symV').textContent=e.target.value+' ms'; refreshReadout(); };
 let repVal=3; const REP=()=>repVal;
 $('repSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{ $('repSeg').querySelectorAll('button').forEach(x=>x.setAttribute('aria-selected',x===b)); repVal=+b.dataset.r; refreshReadout(); });
+$('exactSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{ if(listen) return; $('exactSeg').querySelectorAll('button').forEach(x=>x.setAttribute('aria-selected',x===b)); EXACT_MODE=b.dataset.e; refreshReadout(); });
 function setBand(mode){ BAND=mode;
   if(mode==='ultra'){ FSYNC=17700; F0=18000; DF=100; DFLO=17300; DFHI=19900; }
   else { FSYNC=1050; F0=1200; DF=50; DFLO=900; DFHI=2100; }
@@ -498,7 +569,7 @@ document.querySelectorAll('.seg [role=tab]').forEach(tab=>{
 function activeMode(){ return document.querySelector('.seg [role=tab][aria-selected=true]').dataset.mode; }
 
 /* ---- TEXT ---- */
-let txtMode='fast';
+let txtMode='exact';
 $('msg').addEventListener('input',()=>recompute('text'));
 $('txtSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{ $('txtSeg').querySelectorAll('button').forEach(x=>x.setAttribute('aria-selected',x===b)); txtMode=b.dataset.m; recompute('text'); });
 function updateTxtHint(){ $('txtHint').textContent = txtMode==='fast' ? '≈'+FAST_SECS+'s · readable in the waterfall · not copyable' : 'exact, copyable bytes · slower'; }
@@ -515,7 +586,7 @@ function textToImage(text){
 }
 
 /* ---- IMAGE ---- */
-let stampDim=128, lastImgSrc=null, imgEl=null, imgMode='fast';
+let stampDim=128, lastImgSrc=null, imgEl=null, imgMode='exact';
 const FAST_ROWS=72, FAST_SECS=10;
 function fastBand(){ return BAND==='ultra'?[17500,19900]:[350,3400]; }
 $('stampSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{
@@ -651,17 +722,19 @@ $('playBtn').onclick=()=>{
   if(activeMode()==='image'&&imgMode==='fast'){ transmitFastPicture(imgEl,'picture'); return; }
   if(activeMode()==='text'&&txtMode==='fast'){ const t=$('msg').value; if(t.trim()) transmitFastPicture(textToImage(t),'text'); return; }
   if(!current) return; stopPlay();
-  const fs=44100, frame=buildFrame(current.kind,current.name,current.data), samples=synth(frame,symSec(),44100,REP()), total=samples.length/fs;
+  const fs=44100, frame=buildFrame(current.kind,current.name,current.data), samples=exactSynth(frame,symSec(),44100,REP()), total=samples.length/fs;
   const el=playSamples(samples,fs, e=>{ setStatus($('sStatus'),'Could not start audio ('+(e&&e.name||'error')+'). Tap Transmit again, and check the volume / phone silent switch.','err'); endPlay(); });
   playing={el,samples,fs,total};
-  sigMode='tx'; setLED('tx'); $('stopBtn').disabled=false; $('bandTxt').textContent='transmitting'; setStatus($('sStatus'),`Transmitting ${fmtTime(total)}… turn the volume up and hold steady.`,'live');
+  const turbo=EXACT_MODE==='turbo';
+  if(turbo){ FLO=Math.max(120,OSYNC-150); FHI=oFreq(OG-1,OTPG-1)+250; } else { FLO=DFLO; FHI=DFHI; } setAxis();
+  sigMode='tx'; setLED('tx'); $('stopBtn').disabled=false; $('bandTxt').textContent=turbo?'transmitting · turbo':'transmitting'; setStatus($('sStatus'),`Transmitting ${fmtTime(total)}… turn the volume up and hold steady.`,'live');
   const binHz=fs/4096, NB=2048, fake=new Float32Array(NB);
+  const bump=f=>{ const b=Math.round(f/binHz); for(let d=-2;d<=2;d++){ const i=b+d; if(i>=0&&i<NB) fake[i]=Math.max(fake[i],-16-Math.abs(d)*10); } };
   const step=()=>{ if(!playing||playing.el!==el) return; requestAnimationFrame(step);
     const t=el.currentTime, idx=Math.floor(t*fs), start=Math.max(0,idx-1024), win=Math.min(1024, samples.length-start);
-    if(win>64){ let bn=0,be=-1; for(let k=0;k<N_TONES;k++){ const e=goertzel(samples,start,win,DATA[k],fs); if(e>be){be=e;bn=k;} }
-      const es=goertzel(samples,start,win,FSYNC,fs);
-      fake.fill(-90); const bump=f=>{ const b=Math.round(f/binHz); for(let d=-2;d<=2;d++){ const i=b+d; if(i>=0&&i<NB) fake[i]=Math.max(fake[i],-16-Math.abs(d)*10); } };
-      if(es>be) bump(FSYNC); else { bump(DATA[bn]); lightTone(bn); setNib(bn); }
+    if(win>64){ fake.fill(-90);
+      if(turbo){ const es=goertzel(samples,start,win,OSYNC,fs); let tot=0; for(let g=0;g<OG;g++){ let bk=0,be=-1; for(let k=0;k<OTPG;k++){ const e=goertzel(samples,start,win,oFreq(g,k),fs); if(e>be){be=e;bk=k;} } tot+=be; if(be>0) bump(oFreq(g,bk)); } if(es>tot/OG) bump(OSYNC); }
+      else { let bn=0,be=-1; for(let k=0;k<N_TONES;k++){ const e=goertzel(samples,start,win,DATA[k],fs); if(e>be){be=e;bn=k;} } const es=goertzel(samples,start,win,FSYNC,fs); if(es>be) bump(FSYNC); else { bump(DATA[bn]); lightTone(bn); setNib(bn); } }
       lastBins=fake; lastBinHz=binHz;
     }
     $('txProg').style.width=Math.min(100,(t/total)*100)+'%';
@@ -669,12 +742,12 @@ $('playBtn').onclick=()=>{
   requestAnimationFrame(step);
   el.onended=()=>{ if(playing&&playing.el===el){ endPlay(); setStatus($('sStatus'),'Sent. Decode it on the other device.','ok'); } };
 };
-function endPlay(){ if(playing&&playing.el){ try{playing.el.pause();}catch(e){} } playing=null; $('stopBtn').disabled=true; $('txProg').style.width='0%'; clearTones(); setLED('idle'); $('bandTxt').textContent='carrier idle'; sigMode='idle'; lastBins=null; }
+function endPlay(){ if(playing&&playing.el){ try{playing.el.pause();}catch(e){} } playing=null; $('stopBtn').disabled=true; $('txProg').style.width='0%'; clearTones(); setLED('idle'); $('bandTxt').textContent='carrier idle'; sigMode='idle'; lastBins=null; if(!listen){ FLO=DFLO; FHI=DFHI; setAxis(); } }
 function stopPlay(){ if(playing) endPlay(); }
 $('stopBtn').onclick=stopPlay;
 
 /* ---- WAV ---- */
-$('dlBtn').onclick=()=>{ if(!current) return; const samples=synth(buildFrame(current.kind,current.name,current.data),symSec(),44100,REP());
+$('dlBtn').onclick=()=>{ if(!current) return; const samples=exactSynth(buildFrame(current.kind,current.name,current.data),symSec(),44100,REP());
   const a=document.createElement('a'); a.href=URL.createObjectURL(makeWav(samples,44100)); a.download=(current.name||'earshot')+'.wav'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
 };
 
@@ -689,7 +762,8 @@ async function startMic(decodeOn){
   if(decodeOn){ proc=a.createScriptProcessor(4096,1,1); zero=a.createGain(); zero.gain.value=0; rec=[]; proc.onaudioprocess=e=>rec.push(new Float32Array(e.inputBuffer.getChannelData(0))); src.connect(proc); proc.connect(zero); zero.connect(a.destination); }
   src.connect(an);
   listen={stream,proc,zero,an,src,rec,fs:a.sampleRate,vis:!decodeOn};
-  FLO=decodeOn?DFLO:120; FHI=decodeOn?DFHI:Math.max(4200,DFHI+300); setAxis();
+  const turbo=decodeOn&&EXACT_MODE==='turbo';
+  if(!decodeOn){ FLO=120; FHI=Math.max(4200,DFHI+300); } else if(turbo){ FLO=Math.max(120,OSYNC-150); FHI=oFreq(OG-1,OTPG-1)+250; } else { FLO=DFLO; FHI=DFHI; } setAxis();
   $('listenBtn').disabled=true; $('visBtn').disabled=true; $('decodeBtn').disabled=false; $('result').innerHTML=''; sigMode='rx'; setLED('rx');
   $('bandTxt').textContent=decodeOn?'listening':'any sound';
   setStatus($('rStatus'), decodeOn?'Listening… play the sound on the other device now — it decodes on its own.':'Visualising the mic. Make any sound — hum, sing, play music, chant — and watch the plate.', 'live');
@@ -700,6 +774,9 @@ async function startMic(decodeOn){
     $('level').style.width=Math.min(100,rms*320)+'%';
     if(listen.vis){ let pf=0,pe=-Infinity; const lo=Math.round(80/binHz), hi=Math.round(3000/binHz); for(let i=lo;i<hi;i++){ if(bins[i]>pe){pe=bins[i];pf=i*binHz;} }
       if(pe>-70){ const aa=Math.max(0.6,Math.min(6,0.7+(pf-80)/230)), bb=Math.max(0.6,Math.min(6,0.7+(pf-80)/150)); cyOverride={a:aa,b:bb}; } }
+    else if(turbo){ let pf=0,pe=-Infinity; const lo=Math.round(OBASE/binHz), hi=Math.round(oFreq(OG-1,OTPG-1)/binHz); for(let i=lo;i<hi;i++){ if(bins[i]>pe){pe=bins[i];pf=i*binHz;} }
+      if(pe>-60){ const aa=Math.max(0.6,Math.min(6,0.7+(pf-OBASE)/900)), bb=Math.max(0.6,Math.min(6,0.7+(pf-OBASE)/650)); cyOverride={a:aa,b:bb}; }
+      const sb=Math.round(OSYNC/binHz); if(bins[sb]>-45){ $('led').classList.add('on'); $('ledTxt').textContent='carrier lock'; } }
     else { let bn=-1,be=-Infinity; for(let k=0;k<N_TONES;k++){ const e=bins[Math.round(DATA[k]/binHz)]; if(e>be){be=e;bn=k;} } if(be>-55) setNib(bn);
       const sb=Math.round(FSYNC/binHz); if(bins[sb]>-45){ $('led').classList.add('on'); $('ledTxt').textContent='carrier lock'; } }
   };
@@ -714,14 +791,14 @@ function stopMic(finalize){
   try{ listen.src.disconnect(); if(listen.proc){ listen.proc.disconnect(); listen.zero.disconnect(); } listen.an.disconnect(); }catch(e){}
   const wasVis=listen.vis; listen=null;
   $('listenBtn').disabled=false; $('visBtn').disabled=false; $('decodeBtn').disabled=true; $('level').style.width='0%'; setLED('idle'); $('bandTxt').textContent='carrier idle'; sigMode='idle'; lastBins=null;
-  FLO=DFLO; FHI=DFHI; setAxis(); if(wasVis) cyOverride=null;
+  FLO=DFLO; FHI=DFHI; setAxis(); if(activeMode()!=='tone') cyOverride=null; void wasVis;
 }
 $('listenBtn').onclick=()=>startMic(true);
 $('visBtn').onclick=()=>startMic(false);
 $('selfTestBtn').onclick=async()=>{
   await startMic(true); if(!listen) return; listen.selfTest=true;
   const payload=current||{kind:0,name:'selftest.txt',data:new TextEncoder().encode('Earshot self-test — I heard myself ✓')};
-  const samples=synth(buildFrame(payload.kind,payload.name,payload.data),symSec(),44100,REP());
+  const samples=exactSynth(buildFrame(payload.kind,payload.name,payload.data),symSec(),44100,REP());
   playSamples(samples,44100);
   setStatus($('rStatus'),'Self-test: playing through the speaker and listening on the mic — turn the volume up.','live');
 };
@@ -730,7 +807,7 @@ function tryDecode(finalize){
   const chunks=listen.rec, fs=listen.fs; let len=0; for(const c of chunks) len+=c.length;
   if(len < fs*(LEAD+0.25)){ if(finalize) setStatus($('rStatus'),'No signal heard. Play it closer and louder next time.','err'); return; }
   const x=new Float32Array(len); let o=0; for(const c of chunks){ x.set(c,o); o+=c.length; }
-  let r; try{ r=decode(x,fs,Math.round(symSec()*fs)); }catch(e){ return; }
+  let r; try{ r=exactDecode(x,fs,Math.round(symSec()*fs)); }catch(e){ return; }
   if(r.err){ if(finalize) setStatus($('rStatus'),r.err,'err'); return; }         // partial/none yet — keep listening
   if(r.crcOk){ const wasSelf=listen.selfTest; renderResult(r); if(wasSelf){ stopMic(false); setStatus($('rStatus'),`Self-test passed ✓ — this device heard itself and decoded "${r.name}" exactly.`,'ok'); } else { listen.rec.length=0; } } // clean frame → show it
   else if(finalize){ renderResult(r); }                                          // gave up: show best-effort so they see the errors
@@ -774,7 +851,7 @@ scope.addEventListener('pointerup',()=>dragging=false);
 scope.addEventListener('pointercancel',()=>dragging=false);
 
 refreshReadout();
-window.__earshot={synth,decode,buildFrame,crc32,setBand,getBand:()=>({FSYNC,F0,DF,BAND}),fastSynth,imgGrid,fastBand,loadImageSrc,textToImage};
+window.__earshot={synth,decode,buildFrame,crc32,setBand,getBand:()=>({FSYNC,F0,DF,BAND}),fastSynth,imgGrid,fastBand,loadImageSrc,textToImage,ofdmSynth,ofdmDecode,setExact:m=>{EXACT_MODE=m;},OG};
 })();
 </script>
 </body>
