@@ -183,7 +183,7 @@
         <span>Send as</span>
         <div class="seg2" id="txtSeg">
           <button data-m="exact" aria-selected="true">Exact text</button>
-          <button data-m="fast" aria-selected="false">Fast picture</button>
+          <button data-m="fast" aria-selected="false">Waterfall art</button>
         </div>
         <span style="color:var(--faint);font-size:12px" id="txtHint"></span>
       </div>
@@ -211,7 +211,7 @@
         <span>Send as</span>
         <div class="seg2" id="sendSeg">
           <button data-m="exact" aria-selected="true">Exact file</button>
-          <button data-m="fast" aria-selected="false">Fast picture</button>
+          <button data-m="fast" aria-selected="false">Waterfall art</button>
         </div>
         <span class="faint" id="sendHint" style="color:var(--faint);font-size:12px"></span>
       </div>
@@ -669,7 +669,7 @@ function activeMode(){ return document.querySelector('.seg [role=tab][aria-selec
 let txtMode='exact';
 $('msg').addEventListener('input',()=>recompute('text'));
 $('txtSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{ $('txtSeg').querySelectorAll('button').forEach(x=>x.setAttribute('aria-selected',x===b)); txtMode=b.dataset.m; recompute('text'); });
-function updateTxtHint(){ $('txtHint').textContent = txtMode==='fast' ? '≈'+FAST_SECS+'s · readable in the waterfall · not copyable' : 'exact, copyable bytes · slower'; }
+function updateTxtHint(){ $('txtHint').textContent = txtMode==='fast' ? '≈'+FAST_SECS+'s · appears in the waterfall — NOT copyable text' : 'real copyable text · Turbo-fast'; }
 // render typed text into a high-contrast canvas the spectrogram can paint
 function wrapText(x,words,maxW){ const lines=[]; let cur=''; for(const w of words){ const t=cur?cur+' '+w:w; if(x.measureText(t).width>maxW && cur){ lines.push(cur); cur=w; } else cur=t; } if(cur) lines.push(cur); return lines; }
 function textToImage(text){
@@ -706,7 +706,7 @@ function snapFreqs(rows,fLo,fHi,mode){ // returns rows freqs, row 0 = highest
 function updateImgSend(){
   const fast=imgMode==='fast';
   $('imgQuality').hidden=fast; $('specPreview').hidden=!fast; $('scaleRow').hidden=!fast;
-  $('sendHint').textContent=fast?`≈${FAST_SECS}s · lossy · receiver just watches`:'exact bytes · slow but perfect';
+  $('sendHint').textContent=fast?`≈${FAST_SECS}s · a fuzzy picture in the waterfall — NOT a saved file`:'a real downloadable file · Turbo-fast';
   if(fast&&imgEl) renderSpec();
   enableTransmit(!!imgEl); refreshReadout();
 }
