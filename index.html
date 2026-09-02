@@ -90,9 +90,9 @@
   #pane-tone input[type=range]{width:100%;max-width:none}
   .tlhint{color:var(--faint);font-size:13px;margin-top:14px;line-height:1.6}
   .scope.tone{cursor:crosshair}
-  #repSeg,#bandSeg,#sendSeg,#scaleSeg{display:flex;gap:3px;background:#0b0e14;border:1px solid var(--line);border-radius:9px;padding:3px}
-  #repSeg button,#bandSeg button,#sendSeg button,#scaleSeg button{border:0;background:transparent;color:var(--muted);font-family:var(--mono);font-size:12px;padding:6px 12px;border-radius:6px;cursor:pointer;letter-spacing:.04em}
-  #repSeg button[aria-selected=true],#bandSeg button[aria-selected=true],#sendSeg button[aria-selected=true],#scaleSeg button[aria-selected=true]{background:var(--panel2);color:var(--amber)}
+  #repSeg,#bandSeg,#sendSeg,#scaleSeg,#txtSeg{display:flex;gap:3px;background:#0b0e14;border:1px solid var(--line);border-radius:9px;padding:3px}
+  #repSeg button,#bandSeg button,#sendSeg button,#scaleSeg button,#txtSeg button{border:0;background:transparent;color:var(--muted);font-family:var(--mono);font-size:12px;padding:6px 12px;border-radius:6px;cursor:pointer;letter-spacing:.04em}
+  #repSeg button[aria-selected=true],#bandSeg button[aria-selected=true],#sendSeg button[aria-selected=true],#scaleSeg button[aria-selected=true],#txtSeg button[aria-selected=true]{background:var(--panel2);color:var(--amber)}
   #specCanvas{image-rendering:pixelated}
 
   /* readout */
@@ -179,6 +179,14 @@
     <!-- text -->
     <div class="pane on" id="pane-text">
       <textarea id="msg" placeholder="Type a message to beam across the room… a note, a link, a password you don't want on the network."></textarea>
+      <div class="quality" id="txtSend">
+        <span>Send as</span>
+        <div class="seg2" id="txtSeg">
+          <button data-m="fast" aria-selected="true">Fast picture</button>
+          <button data-m="exact" aria-selected="false">Exact text</button>
+        </div>
+        <span style="color:var(--faint);font-size:12px" id="txtHint"></span>
+      </div>
     </div>
     <!-- image -->
     <div class="pane" id="pane-image">
@@ -214,10 +222,10 @@
       <div class="quality" id="scaleRow" hidden>
         <span>Tune</span>
         <div class="seg2" id="scaleSeg">
-          <button data-s="minor" aria-selected="true">Warm</button>
+          <button data-s="off" aria-selected="true">Raw</button>
+          <button data-s="minor" aria-selected="false">Warm</button>
           <button data-s="major" aria-selected="false">Airy</button>
           <button data-s="phrygian" aria-selected="false">Dark</button>
-          <button data-s="off" aria-selected="false">Raw</button>
         </div>
         <span style="color:var(--faint);font-size:12px">snaps the tones to a scale so any picture sounds musical</span>
       </div>
@@ -454,7 +462,9 @@ function setLED(state){ const led=$('led'), t=$('ledTxt'); led.className='led'+(
 function refreshReadout(){
   const sPerSym=symSec(), bps=(1/sPerSym)*4;
   $('rRate').innerHTML=(bps).toFixed(0)+' <small>bits/s</small>';
-  if(activeMode()==='image'&&imgMode==='fast'){ if(imgEl){ $('rBytes').textContent='picture'; $('rTones').textContent=FAST_ROWS+' rows'; $('rTime').textContent=fmtTime(FAST_SECS); $('rRate').innerHTML='parallel <small>paint</small>'; } else { $('rBytes').textContent='—'; $('rTones').textContent='—'; $('rTime').textContent='—'; } return; }
+  const fastImg=activeMode()==='image'&&imgMode==='fast'&&imgEl, fastTxt=activeMode()==='text'&&txtMode==='fast'&&$('msg').value.trim();
+  if(fastImg||fastTxt){ $('rBytes').textContent='picture'; $('rTones').textContent=FAST_ROWS+' rows'; $('rTime').textContent=fmtTime(FAST_SECS); $('rRate').innerHTML='parallel <small>paint</small>'; return; }
+  if((activeMode()==='image'&&imgMode==='fast')||(activeMode()==='text'&&txtMode==='fast')){ $('rBytes').textContent='—'; $('rTones').textContent='—'; $('rTime').textContent='—'; return; }
   if(!current){ $('rBytes').textContent='—'; $('rTones').textContent='—'; $('rTime').textContent='—'; return; }
   const frame=buildFrame(current.kind,current.name,current.data);
   const tones=frame.length*2, reps=REP(), one=LEAD+tones*sPerSym, secs=reps*one+(reps-1)*GAP;
@@ -488,7 +498,21 @@ document.querySelectorAll('.seg [role=tab]').forEach(tab=>{
 function activeMode(){ return document.querySelector('.seg [role=tab][aria-selected=true]').dataset.mode; }
 
 /* ---- TEXT ---- */
+let txtMode='fast';
 $('msg').addEventListener('input',()=>recompute('text'));
+$('txtSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{ $('txtSeg').querySelectorAll('button').forEach(x=>x.setAttribute('aria-selected',x===b)); txtMode=b.dataset.m; recompute('text'); });
+function updateTxtHint(){ $('txtHint').textContent = txtMode==='fast' ? '≈'+FAST_SECS+'s · readable in the waterfall · not copyable' : 'exact, copyable bytes · slower'; }
+// render typed text into a high-contrast canvas the spectrogram can paint
+function wrapText(x,words,maxW){ const lines=[]; let cur=''; for(const w of words){ const t=cur?cur+' '+w:w; if(x.measureText(t).width>maxW && cur){ lines.push(cur); cur=w; } else cur=t; } if(cur) lines.push(cur); return lines; }
+function textToImage(text){
+  const W=640,H=300, c=document.createElement('canvas'); c.width=W; c.height=H; const x=c.getContext('2d');
+  x.fillStyle='#000'; x.fillRect(0,0,W,H); x.fillStyle='#fff'; x.textAlign='center'; x.textBaseline='middle';
+  const words=(text||' ').trim().split(/\s+/); let lines=[], fs=140;
+  for(fs=150; fs>=22; fs-=4){ x.font='bold '+fs+'px Georgia, "Times New Roman", serif'; lines=wrapText(x,words,W-40); if(lines.length*fs*1.15<=H-24) break; }
+  const lh=fs*1.15, y0=H/2-(lines.length*lh)/2+lh/2;
+  lines.forEach((ln,i)=>x.fillText(ln,W/2,y0+i*lh));
+  return c;
+}
 
 /* ---- IMAGE ---- */
 let stampDim=128, lastImgSrc=null, imgEl=null, imgMode='fast';
@@ -502,7 +526,7 @@ $('sendSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{
   $('sendSeg').querySelectorAll('button').forEach(x=>x.setAttribute('aria-selected',x===b));
   imgMode=b.dataset.m; updateImgSend();
 });
-let scaleMode='minor';
+let scaleMode='off';
 $('scaleSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{ $('scaleSeg').querySelectorAll('button').forEach(x=>x.setAttribute('aria-selected',x===b)); scaleMode=b.dataset.s; });
 const SCALES={minor:[0,3,5,7,10], major:[0,2,4,7,9], phrygian:[0,1,3,5,7,8,10]};
 function scaleFreqs(fLo,fHi,semis){ const out=[]; for(let oct=0;oct<9;oct++){ for(const s of semis){ const f=fLo*Math.pow(2,oct+s/12); if(f>fHi) return out; if(f>=fLo) out.push(f); } } return out; }
@@ -570,13 +594,13 @@ function fastSynth(im, secs, rows, fs){
   let pk=0; for(const v of out) pk=Math.max(pk,Math.abs(v)); const g=pk>0?0.85/pk:1; for(let i=0;i<n;i++) out[i]*=g;
   return out;
 }
-function transmitFastPicture(){
-  if(!imgEl) return; stopPlay();
-  const fs=44100, samples=fastSynth(imgEl,FAST_SECS,FAST_ROWS,fs), total=samples.length/fs, [fLo,fHi]=fastBand();
+function transmitFastPicture(src, label){
+  src=src||imgEl; if(!src) return; stopPlay();
+  const fs=44100, samples=fastSynth(src,FAST_SECS,FAST_ROWS,fs), total=samples.length/fs, [fLo,fHi]=fastBand();
   FLO=Math.max(120,fLo-150); FHI=fHi+250; setAxis();
   const el=playSamples(samples,fs, e=>{ setStatus($('sStatus'),'Could not start audio ('+(e&&e.name||'error')+'). Check volume / silent switch.','err'); endPlay(); });
   playing={el,samples,fs,total};
-  sigMode='tx'; setLED('tx'); $('stopBtn').disabled=false; $('bandTxt').textContent='sending picture'; setStatus($('sStatus'),`Sending picture — ${fmtTime(total)}. Point the other device's mic here, on the Waterfall view.`,'live');
+  sigMode='tx'; setLED('tx'); $('stopBtn').disabled=false; $('bandTxt').textContent='sending '+(label||'picture'); setStatus($('sStatus'),`Sending ${label||'picture'} — ${fmtTime(total)}. Point the other device's mic here, on the Waterfall view.`,'live');
   const NB=2048, binHz=fs/4096, fake=new Float32Array(NB), probes=[]; for(let i=0;i<72;i++) probes.push(fLo+(fHi-fLo)*(i/71));
   const step=()=>{ if(!playing||playing.el!==el) return; requestAnimationFrame(step);
     const t=el.currentTime, idx=Math.floor(t*fs), start=Math.max(0,idx-1024), win=Math.min(1024,samples.length-start);
@@ -607,7 +631,7 @@ $('fileDrop').onclick=()=>$('fileIn').click();
 });
 
 function recompute(mode){
-  if(mode==='text'){ const t=$('msg').value; if(t.length){ current={kind:0,name:'message.txt',data:new TextEncoder().encode(t)}; enableTransmit(true); setStatus($('sStatus'),`${current.data.length} bytes ready.`,'ok'); } else { current=null; enableTransmit(false); setStatus($('sStatus'),'Type something, or switch to Image or File.'); } }
+  if(mode==='text'){ updateTxtHint(); const t=$('msg').value; if(t.trim().length){ current={kind:0,name:'message.txt',data:new TextEncoder().encode(t)}; enableTransmit(true); setStatus($('sStatus'), txtMode==='fast'?`Ready — Fast picture of your text, ≈${FAST_SECS}s.`:`${current.data.length} bytes ready — exact.`,'ok'); } else { current=null; enableTransmit(false); setStatus($('sStatus'),'Type something, or switch to Image or File.'); } }
   else if(mode==='image'){ enableTransmit(!!imgEl); if(imgEl) updateImgSend(); }
   else if(mode==='file'){ enableTransmit(!!current&&current.kind===2); if(!current||current.kind!==2){ current=null; } }
   else if(mode==='tone'){ current=null; enableTransmit(false); }
@@ -624,7 +648,8 @@ function makeWav(samples,fs){ const buf=new ArrayBuffer(44+samples.length*2), v=
 function playSamples(samples,fs,onerr){ const el=new Audio(); el.src=URL.createObjectURL(makeWav(samples,fs)); const p=el.play(); if(p&&p.catch) p.catch(e=>{ if(onerr) onerr(e); }); return el; }
 
 $('playBtn').onclick=()=>{
-  if(activeMode()==='image'&&imgMode==='fast'){ transmitFastPicture(); return; }
+  if(activeMode()==='image'&&imgMode==='fast'){ transmitFastPicture(imgEl,'picture'); return; }
+  if(activeMode()==='text'&&txtMode==='fast'){ const t=$('msg').value; if(t.trim()) transmitFastPicture(textToImage(t),'text'); return; }
   if(!current) return; stopPlay();
   const fs=44100, frame=buildFrame(current.kind,current.name,current.data), samples=synth(frame,symSec(),44100,REP()), total=samples.length/fs;
   const el=playSamples(samples,fs, e=>{ setStatus($('sStatus'),'Could not start audio ('+(e&&e.name||'error')+'). Tap Transmit again, and check the volume / phone silent switch.','err'); endPlay(); });
@@ -749,7 +774,7 @@ scope.addEventListener('pointerup',()=>dragging=false);
 scope.addEventListener('pointercancel',()=>dragging=false);
 
 refreshReadout();
-window.__earshot={synth,decode,buildFrame,crc32,setBand,getBand:()=>({FSYNC,F0,DF,BAND}),fastSynth,imgGrid,fastBand,loadImageSrc};
+window.__earshot={synth,decode,buildFrame,crc32,setBand,getBand:()=>({FSYNC,F0,DF,BAND}),fastSynth,imgGrid,fastBand,loadImageSrc,textToImage};
 })();
 </script>
 </body>
