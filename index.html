@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Earshot</title>
+<title>Bluetune</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -145,7 +145,7 @@
   <header>
     <div class="brand">
       <span class="eyebrow">Acoustic link · exact bytes</span>
-      <h1>Earshot</h1>
+      <h1>Bluetune</h1>
       <div class="tag">Send anything within earshot. It turns into sound one device plays and another hears — arriving as the exact same bytes, no wires, no pairing.</div>
     </div>
     <div class="lock"><span class="led" id="led"></span><span id="ledTxt">idle</span></div>
@@ -845,7 +845,7 @@ $('stopBtn').onclick=stopPlay;
 
 /* ---- WAV ---- */
 $('dlBtn').onclick=()=>{ if(!current) return; const samples=exactSynth(buildFrame(current.kind,current.name,current.data),symSec(),44100,REP());
-  const a=document.createElement('a'); a.href=URL.createObjectURL(makeWav(samples,44100)); a.download=(current.name||'earshot')+'.wav'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+  const a=document.createElement('a'); a.href=URL.createObjectURL(makeWav(samples,44100)); a.download=(current.name||'bluetune')+'.wav'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
 };
 
 /* ---- RECEIVE ---- */
@@ -894,7 +894,7 @@ $('listenBtn').onclick=()=>startMic(true);
 $('visBtn').onclick=()=>startMic(false);
 $('selfTestBtn').onclick=async()=>{
   await startMic(true); if(!listen) return; listen.selfTest=true;
-  const payload=current||{kind:0,name:'selftest.txt',data:new TextEncoder().encode('Earshot self-test — I heard myself ✓')};
+  const payload=current||{kind:0,name:'selftest.txt',data:new TextEncoder().encode('Bluetune self-test — I heard myself ✓')};
   const samples=exactSynth(buildFrame(payload.kind,payload.name,payload.data),symSec(),44100,REP());
   playSamples(samples,44100);
   setStatus($('rStatus'),'Self-test: playing through the speaker and listening on the mic — turn the volume up.','live');
