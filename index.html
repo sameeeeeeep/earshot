@@ -257,6 +257,7 @@
   <div class="controls">
     <button class="btn cyan" id="listenBtn"><span class="dot"></span>Start listening</button>
     <button class="btn ghost" id="visBtn">Visualize any sound</button>
+    <button class="btn ghost" id="selfTestBtn">Self-test on this device</button>
     <button class="btn ghost" id="decodeBtn" disabled>Stop</button>
   </div>
   <div class="meterbar"><i id="level"></i></div>
@@ -575,6 +576,14 @@ function stopMic(finalize){
 }
 $('listenBtn').onclick=()=>startMic(true);
 $('visBtn').onclick=()=>startMic(false);
+$('selfTestBtn').onclick=async()=>{
+  await startMic(true); if(!listen) return; listen.selfTest=true;
+  const payload=current||{kind:0,name:'selftest.txt',data:new TextEncoder().encode('Earshot self-test — I heard myself ✓')};
+  const a=ac(), frame=buildFrame(payload.kind,payload.name,payload.data), samples=synth(frame,symSec(),44100,REP());
+  const buf=a.createBuffer(1,samples.length,44100); buf.copyToChannel(samples,0);
+  const s2=a.createBufferSource(); s2.buffer=buf; s2.connect(a.destination); s2.start();
+  setStatus($('rStatus'),'Self-test: playing through the speaker and listening on the mic — turn the volume up.','live');
+};
 function tryDecode(finalize){
   if(!listen) return;
   const chunks=listen.rec, fs=listen.fs; let len=0; for(const c of chunks) len+=c.length;
@@ -582,7 +591,7 @@ function tryDecode(finalize){
   const x=new Float32Array(len); let o=0; for(const c of chunks){ x.set(c,o); o+=c.length; }
   let r; try{ r=decode(x,fs,Math.round(symSec()*fs)); }catch(e){ return; }
   if(r.err){ if(finalize) setStatus($('rStatus'),r.err,'err'); return; }         // partial/none yet — keep listening
-  if(r.crcOk){ renderResult(r); listen.rec.length=0; }                            // clean frame → show it, then keep listening for more
+  if(r.crcOk){ const wasSelf=listen.selfTest; renderResult(r); if(wasSelf){ stopMic(false); setStatus($('rStatus'),`Self-test passed ✓ — this device heard itself and decoded "${r.name}" exactly.`,'ok'); } else { listen.rec.length=0; } } // clean frame → show it
   else if(finalize){ renderResult(r); }                                          // gave up: show best-effort so they see the errors
 }
 $('decodeBtn').onclick=()=>stopMic(true);
