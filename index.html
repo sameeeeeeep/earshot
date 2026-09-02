@@ -521,35 +521,40 @@ function recompute(mode){
 function enableTransmit(on){ $('playBtn').disabled=$('dlBtn').disabled=!on; }
 
 /* ---- TRANSMIT ---- */
+// WAV blob + <audio> playback — same path as a downloaded file, so it plays where Web Audio output is muted (e.g. iPhone silent switch)
+function makeWav(samples,fs){ const buf=new ArrayBuffer(44+samples.length*2), v=new DataView(buf); const w=(o,s)=>{for(let i=0;i<s.length;i++) v.setUint8(o+i,s.charCodeAt(i));};
+  w(0,'RIFF');v.setUint32(4,36+samples.length*2,true);w(8,'WAVE');w(12,'fmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);v.setUint32(24,fs,true);v.setUint32(28,fs*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);w(36,'data');v.setUint32(40,samples.length*2,true);
+  for(let i=0;i<samples.length;i++){ let s=Math.max(-1,Math.min(1,samples[i])); v.setInt16(44+i*2,s*32767,true); }
+  return new Blob([buf],{type:'audio/wav'}); }
+function playSamples(samples,fs,onerr){ const el=new Audio(); el.src=URL.createObjectURL(makeWav(samples,fs)); const p=el.play(); if(p&&p.catch) p.catch(e=>{ if(onerr) onerr(e); }); return el; }
+
 $('playBtn').onclick=()=>{
   if(!current) return; stopPlay();
-  const a=ac(), frame=buildFrame(current.kind,current.name,current.data), samples=synth(frame,symSec(),44100,REP());
-  const buf=a.createBuffer(1,samples.length,44100); buf.copyToChannel(samples,0);
-  const src=a.createBufferSource(); src.buffer=buf;
-  const an=a.createAnalyser(); an.fftSize=4096; an.smoothingTimeConstant=0.15;
-  src.connect(an); an.connect(a.destination);
-  const bins=new Float32Array(an.frequencyBinCount), binHz=44100/an.fftSize;
-  const total=samples.length/44100, t0=a.currentTime;
-  playing=src; sigMode='tx'; setLED('tx'); $('stopBtn').disabled=false; $('bandTxt').textContent='transmitting'; setStatus($('sStatus'),`Transmitting ${fmtTime(total)}… hold steady.`,'live');
-  const step=()=>{ if(playing!==src) return; requestAnimationFrame(step);
-    an.getFloatFrequencyData(bins); lastBins=bins; lastBinHz=binHz;
-    const el=a.currentTime-t0, prog=Math.min(1,el/total); $('txProg').style.width=(prog*100)+'%';
-    const symIdx=Math.floor((el-LEAD)/symSec());
-    if(symIdx>=0){ const byte=frame[symIdx>>1]; if(byte!=null){ const nib=(symIdx&1)?byte&15:byte>>4; lightTone(nib); setNib(nib); } }
+  const fs=44100, frame=buildFrame(current.kind,current.name,current.data), samples=synth(frame,symSec(),44100,REP()), total=samples.length/fs;
+  const el=playSamples(samples,fs, e=>{ setStatus($('sStatus'),'Could not start audio ('+(e&&e.name||'error')+'). Tap Transmit again, and check the volume / phone silent switch.','err'); endPlay(); });
+  playing={el,samples,fs,total};
+  sigMode='tx'; setLED('tx'); $('stopBtn').disabled=false; $('bandTxt').textContent='transmitting'; setStatus($('sStatus'),`Transmitting ${fmtTime(total)}… turn the volume up and hold steady.`,'live');
+  const binHz=fs/4096, NB=2048, fake=new Float32Array(NB);
+  const step=()=>{ if(!playing||playing.el!==el) return; requestAnimationFrame(step);
+    const t=el.currentTime, idx=Math.floor(t*fs), start=Math.max(0,idx-1024), win=Math.min(1024, samples.length-start);
+    if(win>64){ let bn=0,be=-1; for(let k=0;k<N_TONES;k++){ const e=goertzel(samples,start,win,DATA[k],fs); if(e>be){be=e;bn=k;} }
+      const es=goertzel(samples,start,win,FSYNC,fs);
+      fake.fill(-90); const bump=f=>{ const b=Math.round(f/binHz); for(let d=-2;d<=2;d++){ const i=b+d; if(i>=0&&i<NB) fake[i]=Math.max(fake[i],-16-Math.abs(d)*10); } };
+      if(es>be) bump(FSYNC); else { bump(DATA[bn]); lightTone(bn); setNib(bn); }
+      lastBins=fake; lastBinHz=binHz;
+    }
+    $('txProg').style.width=Math.min(100,(t/total)*100)+'%';
   };
   requestAnimationFrame(step);
-  src.onended=()=>{ if(playing===src){ endPlay(); setStatus($('sStatus'),'Sent. Decode it on the other device.','ok'); } };
+  el.onended=()=>{ if(playing&&playing.el===el){ endPlay(); setStatus($('sStatus'),'Sent. Decode it on the other device.','ok'); } };
 };
-function endPlay(){ playing=null; $('stopBtn').disabled=true; $('txProg').style.width='0%'; clearTones(); setLED('idle'); $('bandTxt').textContent='carrier idle'; sigMode='idle'; lastBins=null; }
-function stopPlay(){ if(playing){ try{playing.stop();}catch(e){} endPlay(); } }
+function endPlay(){ if(playing&&playing.el){ try{playing.el.pause();}catch(e){} } playing=null; $('stopBtn').disabled=true; $('txProg').style.width='0%'; clearTones(); setLED('idle'); $('bandTxt').textContent='carrier idle'; sigMode='idle'; lastBins=null; }
+function stopPlay(){ if(playing) endPlay(); }
 $('stopBtn').onclick=stopPlay;
 
 /* ---- WAV ---- */
-$('dlBtn').onclick=()=>{ if(!current) return; const samples=synth(buildFrame(current.kind,current.name,current.data),symSec(),44100,REP()), fs=44100;
-  const buf=new ArrayBuffer(44+samples.length*2), v=new DataView(buf); const w=(o,s)=>{for(let i=0;i<s.length;i++) v.setUint8(o+i,s.charCodeAt(i));};
-  w(0,'RIFF');v.setUint32(4,36+samples.length*2,true);w(8,'WAVE');w(12,'fmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);v.setUint32(24,fs,true);v.setUint32(28,fs*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);w(36,'data');v.setUint32(40,samples.length*2,true);
-  for(let i=0;i<samples.length;i++){ let s=Math.max(-1,Math.min(1,samples[i])); v.setInt16(44+i*2,s*32767,true); }
-  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([buf],{type:'audio/wav'})); a.download=(current.name||'earshot')+'.wav'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+$('dlBtn').onclick=()=>{ if(!current) return; const samples=synth(buildFrame(current.kind,current.name,current.data),symSec(),44100,REP());
+  const a=document.createElement('a'); a.href=URL.createObjectURL(makeWav(samples,44100)); a.download=(current.name||'earshot')+'.wav'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
 };
 
 /* ---- RECEIVE ---- */
@@ -595,9 +600,8 @@ $('visBtn').onclick=()=>startMic(false);
 $('selfTestBtn').onclick=async()=>{
   await startMic(true); if(!listen) return; listen.selfTest=true;
   const payload=current||{kind:0,name:'selftest.txt',data:new TextEncoder().encode('Earshot self-test — I heard myself ✓')};
-  const a=ac(), frame=buildFrame(payload.kind,payload.name,payload.data), samples=synth(frame,symSec(),44100,REP());
-  const buf=a.createBuffer(1,samples.length,44100); buf.copyToChannel(samples,0);
-  const s2=a.createBufferSource(); s2.buffer=buf; s2.connect(a.destination); s2.start();
+  const samples=synth(buildFrame(payload.kind,payload.name,payload.data),symSec(),44100,REP());
+  playSamples(samples,44100);
   setStatus($('rStatus'),'Self-test: playing through the speaker and listening on the mic — turn the volume up.','live');
 };
 function tryDecode(finalize){
