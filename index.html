@@ -19,6 +19,7 @@
     --sans:"Space Grotesk",system-ui,-apple-system,sans-serif;
   }
   *{box-sizing:border-box}
+  [hidden]{display:none!important}
   html,body{margin:0}
   body{
     background:
@@ -68,7 +69,7 @@
   textarea:focus{border-color:var(--cyan-dim);box-shadow:0 0 0 3px #54d9df22}
   textarea::placeholder{color:var(--faint)}
 
-  .drop{border:1.5px dashed var(--line2);border-radius:11px;padding:26px 18px;text-align:center;cursor:pointer;transition:.15s;background:#0b0e1466}
+  .drop{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:104px;border:1.5px dashed var(--line2);border-radius:11px;padding:22px 18px;text-align:center;cursor:pointer;transition:.15s;background:#0b0e1466}
   .drop:hover,.drop.over{border-color:var(--cyan-dim);background:#54d9df0d}
   .drop strong{color:var(--ink);font-weight:600}
   .drop .sub{color:var(--faint);font-size:13px;margin-top:6px;font-family:var(--mono)}
@@ -183,7 +184,7 @@
     <div class="pane" id="pane-image">
       <label class="drop" id="imgDrop">
         <strong>Drop an image, click, or paste</strong>
-        <div class="sub">it gets shrunk to a sound-sized stamp · JPG / PNG / GIF</div>
+        <div class="sub">JPG · PNG · GIF — painted into sound in seconds</div>
         <input type="file" id="imgIn" accept="image/*" hidden>
       </label>
       <div class="quality" id="imgQuality" hidden>
@@ -500,22 +501,27 @@ function updateImgSend(){
 }
 function loadImageSrc(src){ lastImgSrc=src; compressImage(src); }
 function compressImage(src){
-  const im=new Image(); im.onload=()=>{
-    imgEl=im;
-    const scale=Math.min(1, stampDim/Math.max(im.width,im.height));
-    const w=Math.max(1,Math.round(im.width*scale)), h=Math.max(1,Math.round(im.height*scale));
-    const c=document.createElement('canvas'); c.width=w; c.height=h; const x=c.getContext('2d');
-    x.imageSmoothingQuality='high'; x.drawImage(im,0,0,w,h);
-    let q=0.72, url, bytes, budget=3200;
-    for(let it=0;it<8;it++){ url=c.toDataURL('image/jpeg',q); bytes=dataURLBytes(url); if(bytes<=budget||q<=0.28) break; q-=0.08; }
-    const data=dataURLToBytes(url);
-    current={kind:1,name:'photo.jpg',data};
+  const im=new Image(); im.crossOrigin='anonymous';
+  im.onload=()=>{
+    let url, data, w, h, q=0.72;
+    try{
+      const scale=Math.min(1, stampDim/Math.max(im.width,im.height));
+      w=Math.max(1,Math.round(im.width*scale)); h=Math.max(1,Math.round(im.height*scale));
+      const c=document.createElement('canvas'); c.width=w; c.height=h; const x=c.getContext('2d');
+      x.imageSmoothingQuality='high'; x.drawImage(im,0,0,w,h);
+      for(let it=0;it<8;it++){ url=c.toDataURL('image/jpeg',q); if(dataURLBytes(url)<=3200||q<=0.28) break; q-=0.08; }
+      data=dataURLToBytes(url);
+    }catch(err){
+      imgEl=null; $('imgPreview').hidden=$('imgSend').hidden=$('specPreview').hidden=true; enableTransmit(false);
+      setStatus($('sStatus'),'That image is locked by another site (can’t read its pixels). Save it to your device and upload the file, or paste it with ⌘V.','err'); return;
+    }
+    imgEl=im; current={kind:1,name:'photo.jpg',data};
     $('imgPreview').hidden=false; $('imgThumb').src=url;
-    $('imgMeta').innerHTML=`<b>${w}×${h}</b> stamp · quality ${(q*100)|0}%<br><b>${fmtBytes(data.length)}</b> exact`;
+    $('imgMeta').innerHTML=`<b>${w}×${h}</b> stamp · q${(q*100)|0}%<br><b>${fmtBytes(data.length)}</b> exact`;
     $('imgSend').hidden=false; updateImgSend();
     setStatus($('sStatus'), imgMode==='fast'?`Image ready — Fast picture, ≈${FAST_SECS}s.`:`Image ready — exact ${fmtBytes(data.length)}.`,'ok');
   };
-  im.onerror=()=>setStatus($('sStatus'),'Could not read that image.','err');
+  im.onerror=()=>setStatus($('sStatus'),'Could not read that image. Try a PNG or JPG file.','err');
   im.src=src;
 }
 // build a rows×cols grayscale amplitude grid from an image (letterboxed, gamma^2), shared by preview + synth
@@ -724,7 +730,7 @@ scope.addEventListener('pointerup',()=>dragging=false);
 scope.addEventListener('pointercancel',()=>dragging=false);
 
 refreshReadout();
-window.__earshot={synth,decode,buildFrame,crc32,setBand,getBand:()=>({FSYNC,F0,DF,BAND}),fastSynth,imgGrid,fastBand};
+window.__earshot={synth,decode,buildFrame,crc32,setBand,getBand:()=>({FSYNC,F0,DF,BAND}),fastSynth,imgGrid,fastBand,loadImageSrc};
 })();
 </script>
 </body>
