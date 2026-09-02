@@ -269,11 +269,11 @@
   <div class="dial">
     <span>Redundancy</span>
     <div class="seg2" id="repSeg">
-      <button data-r="1" aria-selected="false">×1</button>
+      <button data-r="1" aria-selected="true">×1</button>
       <button data-r="2" aria-selected="false">×2</button>
-      <button data-r="3" aria-selected="true">×3</button>
+      <button data-r="3" aria-selected="false">×3</button>
     </div>
-    <span style="color:var(--faint);font-size:12px">plays the message N times — the receiver keeps the first clean copy</span>
+    <span style="color:var(--faint);font-size:12px">extra whole-message repeats — usually unneeded now (Reed–Solomon fixes errors); bump up only in a very noisy room</span>
   </div>
   <div class="dial">
     <span>Band</span>
@@ -327,6 +327,81 @@ let FSYNC=1050, F0=1200, DF=50, BAND='audible';
 let DATA=[]; function computeTones(){ DATA=new Array(N_TONES); for(let k=0;k<N_TONES;k++) DATA[k]=F0+k*DF; } computeTones();
 const CRC_T=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0;}return t;})();
 function crc32(b,len){let c=0xFFFFFFFF;len=len==null?b.length:len;for(let i=0;i<len;i++)c=CRC_T[(c^b[i])&0xFF]^(c>>>8);return (c^0xFFFFFFFF)>>>0;}
+
+/* ===== Reed–Solomon over GF(256) (poly 0x11d, generator α=2). Corrects up to NP/2 byte errors per block. ===== */
+const GF_EXP=new Uint8Array(512), GF_LOG=new Uint8Array(256);
+(function(){ let x=1; for(let i=0;i<255;i++){ GF_EXP[i]=x; GF_LOG[x]=i; x<<=1; if(x&0x100) x^=0x11d; } for(let i=255;i<512;i++) GF_EXP[i]=GF_EXP[i-255]; })();
+function gmul(a,b){ return (a===0||b===0)?0:GF_EXP[GF_LOG[a]+GF_LOG[b]]; }
+function ginv(a){ return GF_EXP[255-GF_LOG[a]]; }
+function gdiv(a,b){ return a===0?0:GF_EXP[(GF_LOG[a]+255-GF_LOG[b])%255]; }
+function gpow2(n){ n=((n%255)+255)%255; return GF_EXP[n]; }
+function gpMul(p,q){ const r=new Uint8Array(p.length+q.length-1); for(let j=0;j<q.length;j++) for(let i=0;i<p.length;i++) r[i+j]^=gmul(p[i],q[j]); return r; }
+function gpEval(p,x){ let y=p[0]; for(let i=1;i<p.length;i++) y=gmul(y,x)^p[i]; return y; }
+function gpScale(p,s){ const r=new Uint8Array(p.length); for(let i=0;i<p.length;i++) r[i]=gmul(p[i],s); return r; }
+function gpAdd(p,q){ const r=new Uint8Array(Math.max(p.length,q.length)); for(let i=0;i<p.length;i++) r[i+r.length-p.length]=p[i]; for(let i=0;i<q.length;i++) r[i+r.length-q.length]^=q[i]; return r; }
+const RS_GEN={};
+function rsGen(nsym){ if(RS_GEN[nsym]) return RS_GEN[nsym]; let g=new Uint8Array([1]); for(let i=0;i<nsym;i++) g=gpMul(g,new Uint8Array([1,GF_EXP[i]])); return RS_GEN[nsym]=g; }
+function rsEncode(msg,nsym){ const gen=rsGen(nsym), out=new Uint8Array(msg.length+nsym); out.set(msg,0);
+  for(let i=0;i<msg.length;i++){ const c=out[i]; if(c!==0) for(let j=1;j<gen.length;j++) out[i+j]^=gmul(gen[j],c); }
+  out.set(msg,0); return out; }
+function rsSynd(msg,nsym){ const s=new Uint8Array(nsym+1); for(let i=0;i<nsym;i++) s[i+1]=gpEval(msg,GF_EXP[i]); return s; }
+function rsErrLoc(synd,nsym){
+  let err=new Uint8Array([1]), old=new Uint8Array([1]);
+  for(let i=0;i<nsym;i++){ const K=i+1; let delta=synd[K];
+    for(let j=1;j<err.length;j++) delta^=gmul(err[err.length-1-j], synd[K-j]);
+    old=new Uint8Array([...old,0]);
+    if(delta!==0){ if(old.length>err.length){ const ne=gpScale(old,delta); old=gpScale(err,ginv(delta)); err=ne; } err=gpAdd(err,gpScale(old,delta)); }
+  }
+  let i=0; while(i<err.length-1&&err[i]===0) i++; err=err.slice(i);
+  if((err.length-1)*2>nsym) return null; return err;
+}
+function rsErrPos(errLoc,n){ const errs=errLoc.length-1, pos=[]; for(let i=0;i<n;i++){ if(gpEval(errLoc,GF_EXP[255-i])===0) pos.push(n-1-i); } return pos.length===errs?pos:null; }
+function rsErrEval(synd,errLoc,nsym){ const m=gpMul(synd,errLoc); return m.slice(m.length-(nsym+1)); }
+function rsCorrect(msg,synd,errPos){
+  const cpos=errPos.map(p=>msg.length-1-p);
+  let eloc=new Uint8Array([1]); for(const p of cpos) eloc=gpMul(eloc,new Uint8Array([gpow2(p),1]));
+  const synRev=Uint8Array.from(Array.from(synd).reverse());
+  let ee=rsErrEval(synRev,eloc,eloc.length-1); ee=Uint8Array.from(Array.from(ee).reverse());
+  const X=cpos.map(p=>gpow2(p)), E=new Uint8Array(msg.length);
+  for(let i=0;i<X.length;i++){ const Xi=X[i], XiInv=ginv(Xi); let prime=1;
+    for(let j=0;j<X.length;j++) if(j!==i) prime=gmul(prime, 1^gmul(XiInv,X[j]));
+    if(prime===0) return null;
+    let y=gpEval(Uint8Array.from(Array.from(ee).reverse()),XiInv); y=gmul(Xi,y);
+    E[errPos[i]]=gdiv(y,prime);
+  }
+  return gpAdd(msg,E);
+}
+function rsDecodeBlock(code,nsym){ // returns corrected Uint8Array (len=code.length) or null
+  const synd=rsSynd(code,nsym); let ok=true; for(let i=1;i<synd.length;i++) if(synd[i]!==0){ok=false;break;}
+  if(ok) return code.slice();
+  const el=rsErrLoc(synd,nsym); if(!el) return null;
+  const pos=rsErrPos(el,code.length); if(!pos) return null;
+  const fixed=rsCorrect(code.slice(),synd,pos); if(!fixed) return null;
+  const s2=rsSynd(fixed,nsym); for(let i=1;i<s2.length;i++) if(s2[i]!==0) return null; // reject miscorrection
+  return fixed;
+}
+// Stream: coded = ['S','N', len16 ×3, then per-block: L data + NP parity (shortened, front-padded to 223)]
+const RS_K=223, RS_NP=32;
+function rsEncodeStream(frame){
+  const fl=frame.length, head=[0x53,0x4E,(fl>>8)&255,fl&255,(fl>>8)&255,fl&255,(fl>>8)&255,fl&255], out=[...head];
+  for(let off=0;off<fl;off+=RS_K){ const L=Math.min(RS_K,fl-off), chunk=new Uint8Array(RS_K); chunk.set(frame.subarray(off,off+L),RS_K-L);
+    const code=rsEncode(chunk,RS_NP); for(let i=0;i<L;i++) out.push(code[RS_K-L+i]); for(let i=0;i<RS_NP;i++) out.push(code[RS_K+i]); }
+  return Uint8Array.from(out);
+}
+function rsDecodeStream(bytes){ // returns {frame} or {truncated:true,need,frameLen} or null
+  if(bytes.length<8||bytes[0]!==0x53||bytes[1]!==0x4E) return null;
+  const maj=(a,b,c)=> (a===b||a===c)?a:(b===c?b:a);
+  const fl=(maj(bytes[2],bytes[4],bytes[6])<<8)|maj(bytes[3],bytes[5],bytes[7]);
+  if(fl<7||fl>200000) return null;
+  const nb=Math.ceil(fl/RS_K); let need=8; for(let b=0,rem=fl;b<nb;b++){ const L=Math.min(RS_K,rem); need+=L+RS_NP; rem-=L; }
+  if(bytes.length<need) return {truncated:true,need,frameLen:fl};
+  const frame=new Uint8Array(fl); let p=8, fo=0;
+  for(let b=0,rem=fl;b<nb;b++){ const L=Math.min(RS_K,rem); const code=new Uint8Array(RS_K+RS_NP);
+    for(let i=0;i<L;i++) code[RS_K-L+i]=bytes[p+i]; for(let i=0;i<RS_NP;i++) code[RS_K+i]=bytes[p+L+i];
+    const dec=rsDecodeBlock(code,RS_NP); if(!dec) return {frame:null}; // block unrecoverable
+    for(let i=0;i<L;i++) frame[fo+i]=dec[RS_K-L+i]; fo+=L; p+=L+RS_NP; rem-=L; }
+  return {frame};
+}
 function buildFrame(kind,name,data){
   const nb=new TextEncoder().encode(name).slice(0,255);
   const head=[0x53,0x4E,0x02,kind&255,nb.length]; for(const c of nb) head.push(c);
@@ -426,9 +501,17 @@ function ofdmCandidates(x,fs,symN){
   const ends=[]; let run=0,prev=false;
   for(let i=0;i<es.length;i++){ const on=es[i]>0.12*maxE; if(on) run+=hop; else { if(prev&&run>0.18*fs) ends.push(pos[i]); run=0; } prev=on; }
   if(prev&&run>0.18*fs) ends.push(pos[pos.length-1]);
-  const cands=[]; const lo=Math.round(0.6*symN),hi=Math.round(1.6*symN),fine=Math.max(1,Math.round(0.0025*symN));
-  for(const e of ends){ let best=-1,bc=-1; for(let s=e-lo;s<=e+hi;s+=fine){ const c=oMagicAt(x,s,fs,symN); if(c>bc){bc=c;best=s;} } if(bc>=0) cands.push({s:best,c:bc}); }
-  if(!cands.length){ const scanEnd=Math.min(x.length-symN*2,Math.round(6*fs)),step=Math.max(1,Math.round(0.004*fs)); let best=-1,bc=-1; for(let s=0;s<scanEnd;s+=step){ const c=oMagicAt(x,s,fs,symN); if(c>bc){bc=c;best=s;} } if(bc>=0) cands.push({s:best,c:bc}); }
+  const cands=[]; const lo=Math.round(0.6*symN),hi=Math.round(1.6*symN);
+  const align=(cb,span)=>{ // fine-align around cb by max avg demod confidence over first symbols (magic-gated)
+    let best=cb,bc=-1, fstep=Math.max(1,Math.round(0.0015*symN));
+    for(let s=cb-span;s<=cb+span;s+=fstep){ if(s<0||oMagicAt(x,s,fs,symN)<0) continue; let sc=0,cnt=0;
+      for(let sy=0;sy<5;sy++){ const st=s+sy*symN; if(st+symN>=x.length) break; for(let g=0;g<OG;g++){ sc+=oNib(x,st,fs,symN,g).conf; cnt++; } }
+      const c=cnt?sc/cnt:0; if(c>bc){bc=c;best=s;} } return {s:best,c:bc};
+  };
+  for(const e of ends){ const cstep=Math.max(1,Math.round(0.02*symN)); let cb=-1,cbc=-1;
+    for(let s=e-lo;s<=e+hi;s+=cstep){ const c=oMagicAt(x,s,fs,symN); if(c>cbc){cbc=c;cb=s;} }
+    if(cbc<0) continue; const a=align(cb,cstep); if(a.c>=0) cands.push(a); }
+  if(!cands.length){ const scanEnd=Math.min(x.length-symN*2,Math.round(6*fs)),step=Math.max(1,Math.round(0.02*symN)); let cb=-1,cbc=-1; for(let s=0;s<scanEnd;s+=step){ const c=oMagicAt(x,s,fs,symN); if(c>cbc){cbc=c;cb=s;} } if(cbc>=0){ const a=align(cb,step); if(a.c>=0) cands.push(a); } }
   cands.sort((a,b)=>b.c-a.c); return cands.map(c=>c.s);
 }
 function ofdmDecodeAt(x,s,fs,symN){
@@ -453,10 +536,24 @@ function ofdmDecode(x,fs,symN){
   if(trunc) return {err:`Still receiving "${trunc.name}" (${trunc.dataLen} bytes) — let it finish.`};
   return {err:'Found a signal but couldn’t decode cleanly. Closer + quieter, then resend.'};
 }
-// dispatchers: exact mode = standard (serial) or turbo (OFDM)
+// dispatchers: exact mode = standard (serial) or turbo (OFDM), both wrapped in Reed–Solomon FEC
 let EXACT_MODE='turbo';
-function exactSynth(frame,sSec,fs,reps){ return EXACT_MODE==='turbo'?ofdmSynth(frame,sSec,fs,reps):synth(frame,sSec,fs,reps); }
-function exactDecode(x,fs,symN){ return EXACT_MODE==='turbo'?ofdmDecode(x,fs,symN):decode(x,fs,symN); }
+function demodSerial(x,s,fs,symN){ const avail=Math.floor((x.length-s)/symN), nBytes=Math.min(avail,2*400000)>>1; if(nBytes<8) return null; const b=new Uint8Array(nBytes); for(let i=0;i<nBytes;i++){ const h=symAt(x,s+(2*i)*symN,fs,symN), l=symAt(x,s+(2*i+1)*symN,fs,symN); b[i]=(h.nib<<4)|l.nib; } return b; }
+function demodOFDM(x,s,fs,symN){ const avail=Math.floor((x.length-s)/symN), nsym=Math.min(avail,200000), nBytes=(nsym*OG)>>1; if(nBytes<8) return null; const nibs=new Int16Array(nsym*OG); for(let sy=0;sy<nsym;sy++){ const st=s+sy*symN; for(let g=0;g<OG;g++) nibs[sy*OG+g]=oNib(x,st,fs,symN,g).nib; } const b=new Uint8Array(nBytes); for(let i=0;i<nBytes;i++) b[i]=(nibs[2*i]<<4)|nibs[2*i+1]; return b; }
+function parseFrame(b){ if(b.length<9||b[0]!==0x53||b[1]!==0x4E) return null; const kind=b[3], nameLen=b[4]; let p=5; if(p+nameLen+4>b.length) return null; let name; try{name=new TextDecoder().decode(b.slice(p,p+nameLen));}catch(e){name='received.bin';} p+=nameLen; const dataLen=((b[p]<<24)|(b[p+1]<<16)|(b[p+2]<<8)|b[p+3])>>>0; p+=4; if(dataLen>500000||p+dataLen+4>b.length) return null; const data=b.slice(p,p+dataLen); p+=dataLen; const crc=((b[p]<<24)|(b[p+1]<<16)|(b[p+2]<<8)|b[p+3])>>>0, calc=crc32(b,p); return {kind,name,data,dataLen,crcOk:crc===calc}; }
+function exactSynth(frame,sSec,fs,reps){ const coded=rsEncodeStream(frame); return EXACT_MODE==='turbo'?ofdmSynth(coded,sSec,fs,reps):synth(coded,sSec,fs,reps); }
+function exactCodedLen(frameLen){ return 8+frameLen+Math.ceil(frameLen/RS_K)*RS_NP; }
+function exactDecode(x,fs,symN){
+  const turbo=EXACT_MODE==='turbo', cands=(turbo?ofdmCandidates:findCandidates)(x,fs,symN);
+  if(!cands.length) return {err:'No signal found. Play it louder/closer, cut noise, then try again.'};
+  let fallback=null, trunc=null;
+  for(let i=0;i<cands.length&&i<16;i++){ const raw=(turbo?demodOFDM:demodSerial)(x,cands[i],fs,symN); if(!raw||raw[0]!==0x53||raw[1]!==0x4E) continue;
+    const rs=rsDecodeStream(raw); if(!rs) continue; if(rs.truncated){ trunc=trunc||rs; continue; } if(!rs.frame) continue;
+    const pf=parseFrame(rs.frame); if(!pf) continue; if(pf.crcOk) return pf; if(!fallback) fallback=pf; }
+  if(fallback) return fallback;
+  if(trunc) return {err:`Still receiving (${trunc.frameLen} bytes) — let it finish, or move closer.`};
+  return {err:'Signal found but it would not decode cleanly (too much noise). Move closer, quieter, resend.'};
+}
 
 /* ================= UI ================= */
 const $=id=>document.getElementById(id);
@@ -535,7 +632,7 @@ function refreshReadout(){
   if((activeMode()==='image'&&imgMode==='fast')||(activeMode()==='text'&&txtMode==='fast')){ $('rBytes').textContent='—'; $('rTones').textContent='—'; $('rTime').textContent='—'; return; }
   if(!current){ $('rBytes').textContent='—'; $('rTones').textContent='—'; $('rTime').textContent='—'; return; }
   const frame=buildFrame(current.kind,current.name,current.data);
-  const tones=frame.length*2, reps=REP(), turbo=EXACT_MODE==='turbo';
+  const codedLen=exactCodedLen(frame.length), tones=codedLen*2, reps=REP(), turbo=EXACT_MODE==='turbo';
   const cols=turbo?Math.ceil(tones/OG):tones, one=LEAD+cols*sPerSym, secs=reps*one+(reps-1)*GAP;
   $('rBytes').innerHTML=fmtBytes(current.data.length);
   $('rTones').textContent=turbo?(cols+' cols ×'+OG+(reps>1?' ×'+reps:'')):(tones.toLocaleString()+(reps>1?' ×'+reps:''));
@@ -544,7 +641,7 @@ function refreshReadout(){
   rendered={frame};
 }
 $('sym').oninput=e=>{ $('symV').textContent=e.target.value+' ms'; refreshReadout(); };
-let repVal=3; const REP=()=>repVal;
+let repVal=1; const REP=()=>repVal;
 $('repSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{ $('repSeg').querySelectorAll('button').forEach(x=>x.setAttribute('aria-selected',x===b)); repVal=+b.dataset.r; refreshReadout(); });
 $('exactSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{ if(listen) return; $('exactSeg').querySelectorAll('button').forEach(x=>x.setAttribute('aria-selected',x===b)); EXACT_MODE=b.dataset.e; refreshReadout(); });
 function setBand(mode){ BAND=mode;
@@ -851,7 +948,7 @@ scope.addEventListener('pointerup',()=>dragging=false);
 scope.addEventListener('pointercancel',()=>dragging=false);
 
 refreshReadout();
-window.__earshot={synth,decode,buildFrame,crc32,setBand,getBand:()=>({FSYNC,F0,DF,BAND}),fastSynth,imgGrid,fastBand,loadImageSrc,textToImage,ofdmSynth,ofdmDecode,setExact:m=>{EXACT_MODE=m;},OG};
+window.__earshot={synth,decode,buildFrame,crc32,setBand,getBand:()=>({FSYNC,F0,DF,BAND}),fastSynth,imgGrid,fastBand,loadImageSrc,textToImage,ofdmSynth,ofdmDecode,setExact:m=>{EXACT_MODE=m;},OG,rsEncode,rsDecodeBlock,rsEncodeStream,rsDecodeStream,RS_K,RS_NP,exactSynth,exactDecode};
 })();
 </script>
 </body>
